@@ -523,9 +523,6 @@ void ClientInstance::materializeAllBuffersToHost() {
     if (!buffer->getHostRuntimeTensor().has_value() &&
         buffer->getPreparedTensor().has_value()) {
       if (tt::runtime::isTensorAllocated(buffer->getPreparedTensor().value())) {
-        DLOG_F(LOG_DEBUG,
-               "Materializing buffer UID=%zu to host before mesh reshape",
-               buffer->getUID());
         std::vector<tt::runtime::Tensor> host_tensors = tt::runtime::toHost(
             buffer->getPreparedTensor().value(), /*untilize=*/true);
         if (!host_tensors.empty()) {
@@ -567,12 +564,6 @@ tt::runtime::Device ClientInstance::getOrCreateMeshDevice(
          utils::to_string(parent_mesh_shape).c_str(),
          utils::to_string(target_mesh_shape).c_str());
 
-  // Before closing the mesh, materialize all buffers that have device tensors
-  // to host to prevent data loss. This is necessary because closing the mesh
-  // deallocates all device memory, and buffers from previous executions may
-  // still be in use.
-  materializeAllBuffersToHost();
-
   // NOTE: Due to some issues hit when testing, instead of using the reshape
   // mesh API, we are closing and re-opening the device with the wanted mesh
   // shape. This should be revisited in the future (#1436).
@@ -590,6 +581,12 @@ tt::runtime::Device ClientInstance::getOrCreateMeshDevice(
 }
 
 void ClientInstance::closeMeshDevice() {
+  // Materialize all buffers to host and clear prepared tensors before closing
+  // the mesh. This ensures buffers don't hold references to deallocated tensors
+  // after mesh close, which could cause assertion failures in prepareInputTensor
+  // when buffers are reused as inputs to subsequent graphs.
+  materializeAllBuffersToHost();
+
   closeOptimizerSubmesh();
   closeParentMesh();
 }
@@ -872,6 +869,7 @@ PJRT_Error *onClientDefaultDeviceAssignment(
 PJRT_Error *
 onBufferFromHostBuffer(PJRT_Client_BufferFromHostBuffer_Args *args) {
   DLOG_F(LOG_DEBUG, "ClientInstance::PJRT_Client_BufferFromHostBuffer");
+  ClientInstance *client_instance = ClientInstance::unwrap(args->client);
 
   if (args->device_layout &&
       args->device_layout->type != PJRT_Buffer_MemoryLayout_Type_Strides) {
@@ -923,7 +921,8 @@ onBufferFromHostBuffer(PJRT_Client_BufferFromHostBuffer_Args *args) {
   std::unique_ptr<BufferInstance> buffer =
       BufferInstance::createInputBufferInstance(args->type, args->dims,
                                                 args->num_dims, device_instance,
-                                                memory_instance);
+                                                memory_instance,
+                                                client_instance);
 
   buffer->copyFromHost(
       args->data, args->type, args->dims, args->num_dims, args->byte_strides,

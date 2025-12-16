@@ -501,7 +501,7 @@ tt_pjrt_status BufferInstance::copyToDeviceMemory(DeviceInstance *dst_device,
   std::unique_ptr<BufferInstance> dst_buffer_instance =
       BufferInstance::createInputBufferInstance(
           getDataType(), getDimensionsRaw(), getNumberOfDimensions(),
-          dst_device, dst_memory);
+          dst_device, dst_memory, m_client);
 
   dst_buffer_instance->copyFromBuffer(this);
 
